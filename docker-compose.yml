@@ -34,11 +34,14 @@ services:
     restart: always
     command: python -m flask --app api run --host=0.0.0.0
     ports:
-      - "5000:5000"
+      - "5001:5000"
 
     environment:
       DATABASE_URL: postgresql://user:password@db:5432/aerofit
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      STRAVA_CLIENT_ID: ${STRAVA_CLIENT_ID}
+      STRAVA_CLIENT_SECRET: ${STRAVA_CLIENT_SECRET}
+      STRAVA_REDIRECT_URI: ${STRAVA_REDIRECT_URI}
     volumes:
       - ./analytics_engine:/app
     depends_on:
@@ -51,7 +54,7 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - VITE_API_URL=http://localhost:5000
+      - VITE_API_URL=http://localhost:5001
 
     volumes:
       - ./frontend:/app

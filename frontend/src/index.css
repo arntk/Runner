@@ -1,3 +1,32 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+    --color-midnight: #0f172a;
+    --color-surface: #1e293b;
+    --color-primary: #3b82f6;
+    --color-secondary: #06b6d4;
+    --color-accent: #f97316;
+}
+
+body {
+    background-color: var(--color-midnight);
+    color: #e2e8f0;
+    /* slate-200 */
+}
+
+/* Custom unexpected animations */
+@keyframes pulse-slow {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.animate-pulse-slow {
+    animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
