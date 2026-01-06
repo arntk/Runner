@@ -20,5 +20,19 @@ def migrate_db():
             except Exception as e:
                 print(f"Migration failed: {e}")
 
+        try:
+            # Check if laps column exists
+            conn.execute(text("SELECT laps FROM activities LIMIT 1"))
+            print("Column 'laps' already exists.")
+        except Exception:
+            print("Adding 'laps' column...")
+            conn.rollback() # Clear error
+            try:
+                conn.execute(text("ALTER TABLE activities ADD COLUMN laps JSON"))
+                conn.commit()
+                print("Column 'laps' added successfully.")
+            except Exception as e:
+                print(f"Migration for laps failed: {e}")
+
 if __name__ == "__main__":
     migrate_db()

@@ -1,5 +1,8 @@
 import os
 import logging
+import numpy as np
+import pandas as pd
+from sklearn.cluster import KMeans
 from openai import OpenAI
 
 # Configure Logging
@@ -10,108 +13,254 @@ logger = logging.getLogger(__name__)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SYSTEM_PROMPT = """
-You are an elite-level running coach specializing in the Norwegian Training Method (Double Threshold). You are coaching a sub-elite athlete. Instead of using hardcoded paces, you must dynamically analyze the user's Strava data (Heart Rate and Pace) to determine their current fitness baseline and training zones.
+You are an elite-level running coach specializing in the Norwegian Training Method (Double Threshold). You are coaching a sub-elite athlete.
+You rely entirely on the provided K-Means clustering analysis of their recent lap data.
 
-Core Philosophy
-The training logic relies on high volume and controlled intensity. The goal is to maximize aerobic capacity without accumulating excessive fatigue.
-- Polarized/Threshold Focus: Most "hard" days are actually "Double Threshold" days (AM and PM sessions) kept strictly under lactate threshold (LT2).
-- Volume is King: Consistency in mileage is prioritized over one-off fast workouts.
-- Data Driven: Decisions are made by comparing actual Strava data (Pace pc, Heart Rate hr) against the user's calculated baseline.
-- Imperial Units: All analysis, feedback, and targets must be in Miles and Minutes per Mile. Do not use Kilometers.
+Core Philosophy:
+- "The Split is the Atom": Analysis is based on individual splits/laps, not average activity stats.
+- Double Threshold: Focus on controlled intensity (Cluster 3: Threshold) without accumulation of fatigue.
+- Data Driven: Use the specific Cluster stats provided in the Context to give feedback.
 
-Glossary & Data Parsing
-- Double T: Double Threshold day (AM + PM).
-- subT (Sub-Threshold): 10-20s/mi slower than Threshold. Aerobic strength.
-- T (Threshold): LT2. ~60 min sustain pace. Zone 4.
-- pc: Pace (min/mi).
-- ez / rec: Easy/Recovery. HR Zone 1-2.
-- cs: Steady State. Faster than ez, slower than subT.
-- wu / cd: Warm-up / Cool-down.
-- off: Recovery jog duration.
+Your goal:
+1. Compare today's workout structure (distribution of laps across clusters) against the targets.
+2. If the user ran "Threshold" intervals (Cluster 3), check if they drifted into "VO2 Max" (Cluster 4) or went too slow (Cluster 2).
+3. If the user ran "Recovery" (Cluster 0), check if they ran too fast (Cluster 1 or 2).
+4. Provide a prediction update if valid.
 
-The Logic Engine (Dynamic Rules for AI)
-1. Establish Baseline (The "Anchor")
-   Before analyzing a workout, scan the user's recent Strava history to find their "Anchor Pace" (Current Threshold).
-   - Method: Identify recent workouts labeled "T" or "Threshold" or recent race results.
-   - HR Correlation: Identify the HR associated with this effort (typically 85-90% Max HR).
-
-2. K-means Clustering Logic (Simulated)
-   Use K-means clustering logic to categorize Strava activities automatically based on Pace and Heart Rate.
-   - Cluster A (Recovery): Low HR (<75% Max), Slow Pace.
-   - Cluster B (Aerobic/Steady): Moderate HR (75-82% Max), Moderate Pace.
-   - Cluster C (Threshold/Anchor): High Sustainable HR (85-90% Max), Fast Pace.
-   - Cluster D (VO2/Anaerobic): Max HR (>92% Max), Very Fast Pace.
-   - Cluster E (Outliers/Junk): Disproportionate HR to Pace (e.g., High HR at Slow Pace).
-
-   Suggestion Logic:
-   - Drift Detection: If "Recovery" clusters into Cluster E -> Suggest fatigue/dehydration.
-   - Zone Verification: If "Threshold" clusters into Cluster D -> Warn "Too Hard".
-   - Dynamic Baseline: Use Cluster C centroid to update "Anchor Pace".
-
-3. Generate Zones & Rules
-   - Threshold (T): Target = Anchor Pace. Warn if >10s/mi faster.
-   - Sub-Threshold (subT): Target = Anchor + 15-25s. Warn if HR spikes >5bpm above avg.
-   - Easy/Recovery: Target = HR < 75% Max or Pace > Anchor + 90s. Flag "Junk Miles" if too fast.
-
-4. Heart Rate vs. Pace (The Check)
-   - HR is truth for effort. Pace is truth for performance.
-   - Low Pace + High HR = Fatigue/Sick.
-   - High Pace + Low HR = Fitness improved.
-
-5. Periodization Logic
-   - "A Week": High volume, Double T.
-   - "B Week": Moderate.
-   - "C Week": Recovery.
-   - "Race Week": Taper.
-
-Output Format
-Provide a concise "Coach's Insight" (max 2-3 sentences). Be direct, data-driven, and supportive but strict.
-Example: "You labeled this 'Recovery', but the K-means analysis places this in the 'Aerobic/Steady' cluster. This was too hard for a recovery day."
+Output Format:
+- Concise "Coach's Insight" (2-3 sentences).
+- Specific reference to Pace/HR data from the clusters.
 """
 
-def analyze_activity(activity, recent_history_str):
+def train_user_model(recent_history_activities):
     """
-    Analyzes a single activity using OpenAI and the Norwegian Method system prompt.
+    Trains a K-Means model on the user's recent lap history to identify 5 physiological zones.
+    Returns the model and the centroids (labeled).
+    """
+    all_laps = []
     
-    Args:
-        activity (dict): The current activity to analyze (title, stats).
-        recent_history_str (str): Summary string of recent activities for context.
+    # flattened extraction
+    for activity in recent_history_activities:
+        if not activity.laps:
+            continue
+            
+        for lap in activity.laps:
+            # Safe extraction with defaults
+            avg_speed = lap.get('average_speed', 0) # m/s
+            avg_hr = lap.get('average_heartrate', 0)
+            distance = lap.get('distance', 0) # meters
+            moving_time = lap.get('moving_time', 0) # seconds
+            
+            # 1. Exclusion Criteria
+            # < 30 seconds duration
+            if moving_time < 30:
+                continue
+                
+            # Convert speed to min/mile for filtering check
+            # m/s to min/mile: (1609.34 / speed) / 60
+            if avg_speed <= 0:
+                continue
+            
+            pace_min_mile = (1609.34 / avg_speed) / 60
+            
+            # < 10:00/mile (approx 6.0 min/km or 2.68 m/s check)
+            # 10 min/mile = 10 * 60 = 600 seconds per mile. 
+            # Speed = 1609.34 / 600 = 2.68 m/s. 
+            # If pace > 10:00/mi, it means slower. So speed < 2.68 m/s.
+            if pace_min_mile > 10.0:
+                 continue
+                 
+            all_laps.append({
+                'speed': avg_speed,
+                'hr': avg_hr,
+                'pace_min_mile': pace_min_mile
+            })
+            
+    if len(all_laps) < 10:
+        logger.warning(f"Not enough clean laps to train model. Found {len(all_laps)}.")
+        return None, None
+
+    df = pd.DataFrame(all_laps)
     
-    Returns:
-        str: Coach's feedback.
+    # Features for clustering: Pace (speed) and HR. 
+    # Use HR and Speed. 
+    X = df[['speed', 'hr']].copy() # Using speed (m/s) ensures linear relationships better than pace sometimes, but pace is fine too.
+    
+    # Handle missing HR (fill with mean? or drop?)
+    if X['hr'].isnull().any():
+        X = X.dropna()
+
+    if len(X) < 5:
+        return None, None
+
+    # K-Means = 5
+    kmeans = KMeans(n_clusters=5, random_state=42, n_init=10)
+    kmeans.fit(X)
+    
+    # Labeling Logic (Map centroids to 0-4 based on Speed logic)
+    # Cluster 0: Slowest -> Cluster 4: Fastest
+    centroids = kmeans.cluster_centers_
+    labels_map = {} # cluster_index -> meaning
+    
+    # Create simple structure to sort
+    # centroid = [speed, hr]
+    # We sort by speed (index 0) ascending? No, speed m/s ascending is Slow to Fast.
+    
+    sorted_indices = np.argsort(centroids[:, 0]) # Indices of centroids sorted by speed (low to high)
+    
+    # Map sorted indices to specific zones
+    # index 0 (slowest) -> Cluster 0 (Recovery)
+    # index 1 -> Cluster 1 (Aerobic Base)
+    # index 2 -> Cluster 2 (Grey Zone)
+    # index 3 -> Cluster 3 (Threshold)
+    # index 4 (fastest) -> Cluster 4 (VO2 Max)
+    
+    zone_names = ["Recovery", "Aerobic Base", "Grey Zone", "Threshold", "VO2 Max"]
+    labeled_centroids = {}
+    
+    for rank, cluster_idx in enumerate(sorted_indices):
+        name = zone_names[rank]
+        c_speed = centroids[cluster_idx][0]
+        c_hr = centroids[cluster_idx][1]
+        
+        # Convert speed to min/mile for readable display
+        c_pace = (1609.34 / c_speed) / 60
+        minutes = int(c_pace)
+        seconds = int((c_pace - minutes) * 60)
+        pace_str = f"{minutes}:{seconds:02d}"
+        
+        labeled_centroids[cluster_idx] = {
+            "name": name,
+            "speed_mps": c_speed,
+            "hr": c_hr,
+            "pace": pace_str
+        }
+
+    return kmeans, labeled_centroids
+
+def analyze_activity(activity, recent_history_activities):
+    """
+    Analyzes current activity laps against historical K-Means model.
     """
     try:
-        # Construct User Prompt
+        # 1. Train Model (on history)
+        kmeans_model, labeled_centroids = train_user_model(recent_history_activities)
+        
+        # If no model (not enough data), fallback to basic
+        if not kmeans_model:
+            return "Not enough history to generate K-Means analysis. Keep running!"
+
+        # 2. Analyze Current Laps
+        current_laps_splits = activity.laps
+        if not current_laps_splits:
+             # If no detailed laps yet, maybe return basic message
+             return "No detailed lap data available for this run."
+
+        # Parse current laps for prediction
+        lap_data = []
+        valid_laps = []
+        
+        for lap in current_laps_splits:
+            speed = lap.get('average_speed', 0)
+            hr = lap.get('average_heartrate', 0)
+            # Apply same exclusion for noise
+            if speed > 0 and lap.get('moving_time', 0) > 30:
+                 lap_df = pd.DataFrame([[speed, hr]], columns=['speed', 'hr'])
+                 # Predict cluster
+                 try:
+                    cluster_id = kmeans_model.predict(lap_df)[0]
+                    valid_laps.append({
+                        "cluster": cluster_id, 
+                        "cluster_name": labeled_centroids[cluster_id]['name'],
+                        "speed": speed,
+                        "hr": hr,
+                        "distance": lap.get('distance', 0)
+                    })
+                 except:
+                    pass
+
+        # 3. Generate Race Prediction from Threshold Centroid (Cluster 3 logic)
+        # Find which centroid is "Threshold"
+        threshold_stats = None
+        for cid, stats in labeled_centroids.items():
+            if stats['name'] == 'Threshold':
+                threshold_stats = stats
+                break
+        
+        race_pred_msg = ""
+        if threshold_stats:
+            # Prediction: Threshold Pace + 5-10s (approx 0.16 to 0.33 min/mile slower)
+            # Calculate pace from speed
+            t_pace_dec = (1609.34 / threshold_stats['speed_mps']) / 60 
+            hm_pace_dec = t_pace_dec + (8/60) # adding ~8 seconds decay
+            
+            hm_mins = int(hm_pace_dec)
+            hm_secs = int((hm_pace_dec - hm_mins) * 60)
+            
+            # Total time (13.1 miles)
+            total_min = hm_pace_dec * 13.1
+            total_h = int(total_min // 60)
+            total_m = int(total_min % 60)
+            
+            race_pred_msg = f"Predicted HM: {total_h}h {total_m}m @ {hm_mins}:{hm_secs:02d}/mi (Based on Threshold Analysis)."
+
+        # 4. Construct Prompt
+        # Summarize established zones
+        zones_summary = "ESTABLISHED ZONES (K-Means Centroids):\n"
+        for cid, info in labeled_centroids.items():
+            zones_summary += f"- {info['name']}: {info['pace']}/mi, {int(info['hr'])} bpm\n"
+            
+        # Summarize Today's Performance
+        today_summary = "TODAY'S LAPS CLUSTERING:\n"
+        from collections import Counter
+        cluster_counts = Counter([l['cluster_name'] for l in valid_laps])
+        
+        for name, count in cluster_counts.items():
+            # Get avg pace/hr for these laps
+            laps_in_cluster = [l for l in valid_laps if l['cluster_name'] == name]
+            avg_speed_c = np.mean([l['speed'] for l in laps_in_cluster])
+            avg_hr_c = np.mean([l['hr'] for l in laps_in_cluster])
+            
+            c_pace = (1609.34 / avg_speed_c) / 60
+            c_m = int(c_pace)
+            c_s = int((c_pace - c_m) * 60)
+            
+            today_summary += f"- {count} laps in {name}: Avg {c_m}:{c_s:02d}/mi, {int(avg_hr_c)} bpm\n"
+
         user_prompt = f"""
-        Analyze this workout:
-        Title: {activity.get('name', 'Unknown')}
-        Type: {activity.get('type', 'Run')}
-        Distance: {activity.get('distance', 0) / 1609.34:.2f} miles
-        Duration: {activity.get('moving_time', 0) / 60:.1f} minutes
-        Avg HR: {activity.get('average_heartrate', 'N/A')} bpm
-        Max HR: {activity.get('max_heartrate', 'N/A')} bpm
-        Avg Speed: {activity.get('average_speed', 0)} m/s (Convert to min/mile)
+        Analyze this workout based on the K-Means analysis.
         
-        Recent History Context:
-        {recent_history_str}
+        {zones_summary}
         
-        Provide your Coach's Note based on the Norwegian Method logic.
+        {today_summary}
+        
+        {race_pred_msg}
+        
+        The user titled this run: "{activity.activity_type}" (Date: {activity.date})
+        Discrepancy Check:
+        - Did they run Recovery laps too fast?
+        - Did their Threshold laps align with the established Threshold centroid?
         """
 
         response = client.chat.completions.create(
-            model="gpt-4o", # Use 4o for best reasoning
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.7,
-            max_tokens=150
+            max_tokens=200
         )
         
         feedback = response.choices[0].message.content.strip()
+        
+        # Append race prediction to feedback if relevant
+        if race_pred_msg:
+             feedback += f"\n\n{race_pred_msg}"
+             
         logger.info(f"Generated AI Feedback: {feedback}")
         return feedback
 
     except Exception as e:
         logger.error(f"Error generating AI feedback: {e}")
-        return "Coach is currently offline. Keep running consistent!"
+        return f"Error analyzing data: {str(e)}"

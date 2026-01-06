@@ -103,6 +103,47 @@ const StatBox = ({ label, value, sub, icon: Icon, colorClass, iconBgClass }) => 
   </div>
 );
 
+const ActivityList = ({ activities }) => (
+  <div className="overflow-x-auto">
+    <table className="w-full text-left border-collapse">
+      <thead>
+        <tr>
+          <th className="p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider border-b border-slate-800">Date</th>
+          <th className="p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider border-b border-slate-800">Type</th>
+          <th className="p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider border-b border-slate-800">Distance</th>
+          <th className="p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider border-b border-slate-800">Time</th>
+          <th className="p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider border-b border-slate-800">Avg HR</th>
+        </tr>
+      </thead>
+      <tbody>
+        {activities && activities.length > 0 ? (
+          activities.map((activity) => (
+            <tr key={activity.id} className="hover:bg-slate-800/30 transition-colors border-b border-slate-800/50 last:border-0">
+              <td className="p-3 text-sm text-slate-300 font-mono">{new Date(activity.date).toLocaleDateString()}</td>
+              <td className="p-3 text-sm text-white font-medium capitalize">{activity.type}</td>
+              <td className="p-3 text-sm text-slate-300 font-mono">{(activity.distance / 1609.34).toFixed(2)} mi</td>
+              <td className="p-3 text-sm text-slate-300 font-mono">{new Date(activity.duration * 1000).toISOString().substr(11, 8)}</td>
+              <td className="p-3 text-sm text-slate-300 font-mono">
+                {activity.avg_hr ? (
+                  <span className={`px-2 py-0.5 rounded ${activity.avg_hr > 160 ? 'bg-red-500/20 text-red-500' : 'bg-green-500/20 text-green-500'}`}>
+                    {Math.round(activity.avg_hr)} bpm
+                  </span>
+                ) : '-'}
+              </td>
+            </tr>
+          ))
+        ) : (
+          <tr>
+            <td colSpan="5" className="p-4 text-center text-slate-500 text-sm">
+              No recent activities found. Connect Strava to sync data.
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  </div>
+);
+
 // --- Views ---
 
 const LoginView = ({ onLogin }) => (
@@ -173,6 +214,7 @@ const Dashboard = ({ user }) => {
   const [activeTab, setActiveTab] = useState('analysis');
   const [showToast, setShowToast] = useState(true);
   const [latestActivity, setLatestActivity] = useState(null);
+  const [recentActivities, setRecentActivities] = useState([]);
 
   useEffect(() => {
     // Fetch latest activity with AI feedback
@@ -184,6 +226,16 @@ const Dashboard = ({ user }) => {
         }
       })
       .catch(err => console.error("Failed to fetch latest activity", err));
+
+    // Fetch recent activities list
+    fetch(`${import.meta.env.VITE_API_URL}/api/activities`)
+      .then(res => res.json())
+      .then(data => {
+        if (data && Array.isArray(data)) {
+          setRecentActivities(data);
+        }
+      })
+      .catch(err => console.error("Failed to fetch recent activities", err));
   }, []);
 
   useEffect(() => {
@@ -282,6 +334,15 @@ const Dashboard = ({ user }) => {
               }
 
             </Card >
+
+            {/* Recent Activities List */}
+            <Card delay={500}>
+              <div className="flex items-center space-x-3 mb-6">
+                <div className="w-1 h-6 bg-primary rounded-full"></div>
+                <h3 className="text-xl font-bold text-white">Recent Training History</h3>
+              </div>
+              <ActivityList activities={recentActivities} />
+            </Card>
           </div >
         );
 

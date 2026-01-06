@@ -3,7 +3,7 @@ import logging
 import requests
 import time
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, BigInteger, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, BigInteger, Text, JSON
 from ai_coach import analyze_activity
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.dialects.postgresql import insert
@@ -32,6 +32,7 @@ class Activity(Base):
     distance_meters = Column(Float)
     duration_seconds = Column(Float)
     rpe = Column(Float, nullable=True)
+    laps = Column(JSON, nullable=True) # Store array of lap objects
     ai_feedback = Column(Text, nullable=True)
 
 class StravaAuth(Base):
@@ -61,6 +62,18 @@ def get_auth_url():
     client_id, _, redirect_uri = get_strava_config()
     scope = "read,activity:read_all"
     return f"https://www.strava.com/oauth/authorize?client_id={client_id}&response_type=code&redirect_uri={redirect_uri}&approval_prompt=force&scope={scope}"
+
+def get_activity_details(activity_id, access_token):
+    """Fetch detailed activity data including splits/laps"""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    response = requests.get(
+        f"https://www.strava.com/api/v3/activities/{activity_id}",
+        headers=headers
+    )
+    if response.status_code != 200:
+        logger.warning(f"Failed to fetch details for activity {activity_id}: {response.text}")
+        return None
+    return response.json()
 
 def exchange_code_for_token(code):
     client_id, client_secret, _ = get_strava_config()
@@ -223,37 +236,51 @@ def process_activities(activities):
                     'max_hr': stmt.excluded.max_hr,
                     'avg_speed_mps': stmt.excluded.avg_speed_mps,
                     'distance_meters': stmt.excluded.distance_meters,
-                    'distance_meters': stmt.excluded.distance_meters,
                     'duration_seconds': stmt.excluded.duration_seconds
                 }
             )
             
-            existing = session.query(Activity).filter_by(activity_id=activity_id).first()
             session.execute(do_update_stmt)
+            session.commit() # Commit basic info first
+
+            # Fetch detailed splits if laps are missing or it's a new run
+            # In a real system, we'd check if 'laps' column is null for this ID
+            # Here we just blindly fetch details for simplicity of this task, 
+            # but ideally we only do this if it's new.
+            
+            # Fetch details
+            # Note: This increases API rate limit usage!
+            try:
+                details = get_activity_details(activity_id, get_valid_access_token())
+                if details:
+                    # Prefer splits_metric (1000m or 1mi usually) over laps (manual laps)
+                    # The user prompt asked for "The Split is the Atom"
+                    splits = details.get('splits_metric') or details.get('laps')
+                    if splits:
+                        session.query(Activity).filter_by(activity_id=activity_id).update({"laps": splits})
+                        session.commit()
+            except Exception as e:
+                logger.error(f"Error fetching details for {activity_id}: {e}")
+
+            # Reload activity to get updated data including laps
+            existing = session.query(Activity).filter_by(activity_id=activity_id).first()
             
             # AI Analysis Trigger (Only if it's a new or updated run without feedback)
-            # For simplicity, we'll re-analyze if it's a new insertion or if we force it.
-            # Here we just analyze the *most recent* run in the batch if it was inserted/updated
-            
             if not existing or (existing and not existing.ai_feedback):
                  # Fetch recent history for context
-                 # (In a real app, optimize this query to not be inside the loop or fetch once)
-                 recent_activities = session.query(Activity).order_by(Activity.date.desc()).limit(10).all()
-                 history_str = "\\n".join([f"{a.date.date()}: {a.activity_type} - {a.distance_meters}m" for a in recent_activities])
+                 # Fetch ONLY the laps data for history now
+                 recent_activities = session.query(Activity).filter(Activity.laps.isnot(None)).order_by(Activity.date.desc()).limit(20).all()
                  
                  # Analyze
-                 feedback = analyze_activity(activity, history_str)
+                 feedback = analyze_activity(existing, recent_activities)
                  
                  # Update DB with feedback
-                 update_feedback = session.query(Activity).filter_by(activity_id=activity_id).update({"ai_feedback": feedback})
+                 session.query(Activity).filter_by(activity_id=activity_id).update({"ai_feedback": feedback})
+                 session.commit()
             
-            if existing:
-                updated_count += 1
-            else:
-                inserted_count += 1
+            updated_count += 1
                 
-        session.commit()
-        logger.info(f"Processed {len(activities)} activities. Inserted {inserted_count}, Updated {updated_count}.")
+        logger.info(f"Processed {len(activities)} activities.")
         
     except Exception as e:
         logger.error(f"Error processing Strava activities: {e}")

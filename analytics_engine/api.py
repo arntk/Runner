@@ -113,6 +113,32 @@ def get_latest_activity():
     finally:
         session.close()
 
+@app.route('/api/activities', methods=['GET'])
+def get_recent_activities():
+    Session = init_db()
+    session = Session()
+    try:
+        activities = session.query(Activity).filter_by(activity_type='run').order_by(Activity.date.desc()).limit(10).all()
+        
+        result = []
+        for a in activities:
+            result.append({
+                'id': a.activity_id,
+                'date': a.date,
+                'type': a.activity_type,
+                'distance': a.distance_meters,
+                'duration': a.duration_seconds,
+                'avg_hr': a.avg_hr,
+                'ai_feedback': a.ai_feedback
+            })
+            
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error(f"Error fetching recent activities: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        session.close()
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001)
 

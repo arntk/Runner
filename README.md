@@ -40,20 +40,33 @@ Running has seen a massive surge in popularity, with countless individuals picki
 
 ## 5. Technical Architecture
 
-* **Data Source:** Garmin Connect (via `garminconnect` Python library).
-* **Ingestion:** Dockerized Python worker (Cron job).
+* **Data Source:** Strava API (via OAuth 2.0).
+* **Ingestion:** Python-based Analytics Engine (`ingest_strava.py`).
 * **Storage:** PostgreSQL (Time-series data for Heart Rate, Speed, Distance).
 * **Logic:** Pandas & Scikit-Learn (K-Means Clustering for Zone Identification).
 * **Intelligence:** OpenAI API (GPT-4o) for physiological reasoning and coaching feedback.
-* **Frontend:** React/Streamlit (Visualizing the "Lactate Curve" and Training Zones).
+* **Frontend:** React (Visualizing the "Lactate Curve" and Training Zones).
 
-## 6. Data Flow & Logic
-1.  **Extract:** Python worker wakes up -> Fetches yesterday's activities from Garmin.
-2.  **Transform:** Cleans data and calculates `Intensity Factor` and `Heart Rate Decoupling` (Efficiency).
-3.  **Load:** Stores clean metrics in Postgres.
-4.  **Profile:** K-Means algorithm runs on trailing 60 days of data to recalibrate LT1/LT2 zones.
-5.  **Analyze:** System constructs a prompt injecting the user's **Dynamic Zones** and **Today's Metrics**.
-6.  **Output:** AI generates a summary of training impact and suggests adjustments for tomorrow.
+## 6. Data Flow & Logic (Strava Integration)
+
+1.  **Authentication (OAuth 2.0):**
+    *   User initiates connection via Frontend ("Connect with Strava").
+    *   Redirects to Strava for authorization.
+    *   Callback to Backend (`/api/auth/strava/callback`) exchanges `code` for `access_token` and `refresh_token`.
+    *   Tokens are securely stored in the PostgreSQL database.
+
+2.  **Ingestion:**
+    *   System polls Strava for recent activities using the stored user token.
+    *   Filters activities to strictly ingest **Runs**.
+
+3.  **Transform & Load:**
+    *   Cleans raw telemetry (Heart Rate, Speed, Distance).
+    *   Calculates derived metrics and stores them in the `activities` table.
+
+4.  **Profile & Analyze:**
+    *   K-Means algorithm runs on trailing data to recalibrate LT1/LT2 zones.
+    *   **AI Analyst:** If a new run is detected, the system constructs a prompt with the user's Dynamic Zones and run metrics.
+    *   **Output:** GPT-4o generates coaching feedback, which is saved back to the database for display.
 
 ---
 
