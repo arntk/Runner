@@ -20,7 +20,12 @@
 **Success Criteria**:
   1. User can create/edit a profile with custom HR and Pace zones (Zones 1-5).
   2. System persists and retrieves user zones for use in analytics.
-**Plans**: TBD
+**Plans**:
+  - [ ] Plan 01-01: Multi-User Backend Foundation (Wave 1)
+  - [ ] Plan 01-02: Analytics Intelligence & VDOT Service (Wave 1)
+  - [ ] Plan 01-03: Mobile Authentication & Onboarding (Wave 2)
+  - [ ] Plan 01-04: Mobile Profile & Zone Management (Wave 2)
+  - [ ] Plan 01-05: Strava Multi-User Integration & E2E Validation (Wave 3)
 **UI hint**: yes
 
 ### Phase 2: Real-time Data Sync & Ingestion
@@ -85,7 +90,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. User Profile & Foundation | 0/0 | Not started | - |
+| 1. User Profile & Foundation | 5/5 | Planned | - |
 | 2. Real-time Data Sync & Ingestion | 0/0 | Not started | - |
 | 3. Core Analytics (Zones & Clustering) | 0/0 | Not started | - |
 | 4. Advanced Training Metrics | 0/0 | Not started | - |
