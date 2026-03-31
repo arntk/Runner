@@ -44,7 +44,25 @@
 ---
 
 ## Traceability
-*To be filled by roadmap creation.*
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| FOUND-01 | Phase 2 | Pending |
+| FOUND-02 | Phase 2 | Pending |
+| FOUND-03 | Phase 1 | Pending |
+| FOUND-04 | Phase 2 | Pending |
+| ANALYTIC-01 | Phase 3 | Pending |
+| ANALYTIC-02 | Phase 4 | Pending |
+| ANALYTIC-03 | Phase 4 | Pending |
+| ANALYTIC-04 | Phase 4 | Pending |
+| ANALYTIC-05 | Phase 3 | Pending |
+| COACH-01 | Phase 5 | Pending |
+| COACH-02 | Phase 5 | Pending |
+| COACH-03 | Phase 5 | Pending |
+| COACH-04 | Phase 5 | Pending |
+| LOGISTIC-01 | Phase 6 | Pending |
+| LOGISTIC-02 | Phase 6 | Pending |
+| LOGISTIC-03 | Phase 6 | Pending |
 
 ---
 *Last updated: March 30, 2026*
