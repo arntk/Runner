@@ -2,39 +2,12 @@ import os
 import logging
 from datetime import datetime
 from garminconnect import Garmin
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, BigInteger
-from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.dialects.postgresql import insert
+from models import init_db, Activity
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Database Setup
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    # Fallback for local testing if not in Docker
-    DATABASE_URL = "postgresql://user:password@localhost:5432/aerofit"
-
-Base = declarative_base()
-
-class Activity(Base):
-    __tablename__ = 'activities'
-
-    activity_id = Column(BigInteger, primary_key=True)
-    date = Column(DateTime, nullable=False)
-    activity_type = Column(String, nullable=False) # 'run' or 'race'
-    avg_hr = Column(Integer)
-    max_hr = Column(Integer)
-    avg_speed_mps = Column(Float)
-    distance_meters = Column(Float)
-    duration_seconds = Column(Float)
-    rpe = Column(Float, nullable=True)
-
-def init_db():
-    engine = create_engine(DATABASE_URL)
-    Base.metadata.create_all(engine) # Ensure table exists
-    return sessionmaker(bind=engine)
 
 def get_garmin_client(email=None, password=None):
     if not email:
@@ -53,7 +26,7 @@ def get_garmin_client(email=None, password=None):
         logger.error(f"Failed to authenticate with Garmin: {e}")
         raise
 
-def fetch_garmin_data(email=None, password=None):
+def fetch_garmin_data(user_id, email=None, password=None):
     try:
         Session = init_db()
         session = Session()
@@ -107,6 +80,7 @@ def fetch_garmin_data(email=None, password=None):
             # Upsert Logic
             stmt = insert(Activity).values(
                 activity_id=activity_id,
+                user_id=user_id,
                 date=start_time_local,
                 activity_type=activity_type,
                 avg_hr=avg_hr,
@@ -120,6 +94,7 @@ def fetch_garmin_data(email=None, password=None):
             do_update_stmt = stmt.on_conflict_do_update(
                 index_elements=['activity_id'],
                 set_={
+                    'user_id': stmt.excluded.user_id,
                     'date': stmt.excluded.date,
                     'activity_type': stmt.excluded.activity_type,
                     'avg_hr': stmt.excluded.avg_hr,
@@ -132,7 +107,7 @@ def fetch_garmin_data(email=None, password=None):
             )
             
             # Check existence for logging
-            existing = session.query(Activity).filter_by(activity_id=activity_id).first()
+            existing = session.query(Activity).filter_by(activity_id=activity_id, user_id=user_id).first()
             
             try:
                 session.execute(do_update_stmt)
@@ -148,11 +123,16 @@ def fetch_garmin_data(email=None, password=None):
                 session.rollback()
                 
         session.close()
-        print(f"Fetched 50 activities. Inserted {inserted_count} new, Updated {updated_count}.")
+        logger.info(f"Fetched 50 activities for user {user_id}. Inserted {inserted_count} new, Updated {updated_count}.")
         
     except Exception as e:
         logger.error(f"An error occurred: {e}")
         raise e
 
 if __name__ == "__main__":
-    fetch_garmin_data()
+    # For standalone testing, would need a test user_id
+    import sys
+    if len(sys.argv) > 1:
+        fetch_garmin_data(sys.argv[1])
+    else:
+        logger.error("Usage: python ingest_garmin.py <user_id>")

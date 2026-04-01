@@ -34,5 +34,18 @@ def migrate_db():
             except Exception as e:
                 print(f"Migration for laps failed: {e}")
 
+        try:
+            conn.execute(text("SELECT protein_reminded FROM activities LIMIT 1"))
+            print("Column 'protein_reminded' already exists.")
+        except Exception:
+            print("Adding 'protein_reminded' column...")
+            conn.rollback()
+            try:
+                conn.execute(text("ALTER TABLE activities ADD COLUMN protein_reminded BOOLEAN DEFAULT FALSE"))
+                conn.commit()
+                print("Column 'protein_reminded' added successfully.")
+            except Exception as e:
+                print(f"Migration for protein_reminded failed: {e}")
+
 if __name__ == "__main__":
     migrate_db()

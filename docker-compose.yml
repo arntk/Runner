@@ -42,8 +42,25 @@ services:
       STRAVA_CLIENT_ID: ${STRAVA_CLIENT_ID}
       STRAVA_CLIENT_SECRET: ${STRAVA_CLIENT_SECRET}
       STRAVA_REDIRECT_URI: ${STRAVA_REDIRECT_URI}
+      OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY}
     volumes:
       - ./analytics_engine:/app
+    depends_on:
+      - db
+
+  backend:
+    build: ./backend
+    container_name: aerofit_backend
+    restart: always
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://user:password@db:5432/aerofit
+      JWT_SECRET: ${JWT_SECRET:-supersecret}
+      PORT: 3001
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
     depends_on:
       - db
 

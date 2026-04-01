@@ -1,6 +1,16 @@
 node_modules
 .env
+.env.test
 .DS_Store
 dist
 build
 coverage
+__pycache__/
+*.pyc
+.planning/debug/
+.planning/research/
+.planning/phases/**/PLAN-*.md
+package-lock.json
+mobile/package-lock.json
+backend/package-lock.json
+mobile/.expo/

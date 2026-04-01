@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
 from openai import OpenAI
+from models import init_db, Profile
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -11,6 +12,48 @@ logger = logging.getLogger(__name__)
 
 # Initialize OpenAI Client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+def convert_relative_to_absolute(profile):
+    """
+    Converts relative units (% of Max HR, % of Threshold Pace) into absolute values.
+    Returns absolute hr_zones and pace_zones.
+    """
+    abs_hr_zones = {}
+    abs_pace_zones = {}
+    
+    # HR Conversion
+    if profile.hr_unit_pref == 'percentage' and profile.max_hr:
+        for zone, val in profile.hr_zones.items():
+            if isinstance(val, (int, float)):
+                abs_hr_zones[zone] = int((val / 100) * profile.max_hr)
+            else:
+                abs_hr_zones[zone] = val
+    else:
+        abs_hr_zones = profile.hr_zones
+
+    # Pace Conversion
+    # Assuming relative pace is % of Threshold Pace (vDOT based or manual)
+    # If pace_unit_pref is 'percentage', val is % of Threshold Speed (m/s)
+    # Actually, usually pace zones are defined by ranges. 
+    # Let's assume a simpler model for now: val is m/s if absolute, or % of threshold if relative.
+    # We need a threshold speed. If profile has vdot, we can get it.
+    threshold_speed = None
+    if profile.vdot:
+        from vdot import get_velocity_for_vo2
+        # Threshold is ~88% of VO2max
+        threshold_speed = get_velocity_for_vo2(0.88 * profile.vdot)
+
+    if profile.pace_unit_pref == 'percentage' and threshold_speed:
+        for zone, val in profile.pace_zones.items():
+            if isinstance(val, (int, float)):
+                speed = (val / 100) * threshold_speed
+                abs_pace_zones[zone] = speed
+            else:
+                abs_pace_zones[zone] = val
+    else:
+        abs_pace_zones = profile.pace_zones
+        
+    return abs_hr_zones, abs_pace_zones
 
 SYSTEM_PROMPT = """
 You are an elite-level running coach specializing in the Norwegian Training Method (Double Threshold). You are coaching a sub-elite athlete.
@@ -140,17 +183,26 @@ def train_user_model(recent_history_activities):
 
 def analyze_activity(activity, recent_history_activities):
     """
-    Analyzes current activity laps against historical K-Means model.
+    Analyzes current activity laps against historical K-Means model and user profile.
     """
+    Session = init_db()
+    session = Session()
     try:
-        # 1. Train Model (on history)
+        # 1. Fetch User Profile
+        profile = session.query(Profile).filter_by(user_id=activity.user_id).first()
+        abs_hr_zones = {}
+        abs_pace_zones = {}
+        if profile:
+            abs_hr_zones, abs_pace_zones = convert_relative_to_absolute(profile)
+            
+        # 2. Train Model (on history)
         kmeans_model, labeled_centroids = train_user_model(recent_history_activities)
         
         # If no model (not enough data), fallback to basic
         if not kmeans_model:
             return "Not enough history to generate K-Means analysis. Keep running!"
 
-        # 2. Analyze Current Laps
+        # 3. Analyze Current Laps
         current_laps_splits = activity.laps
         if not current_laps_splits:
              # If no detailed laps yet, maybe return basic message
@@ -179,7 +231,7 @@ def analyze_activity(activity, recent_history_activities):
                  except:
                     pass
 
-        # 3. Generate Race Prediction from Threshold Centroid (Cluster 3 logic)
+        # 4. Generate Race Prediction from Threshold Centroid (Cluster 3 logic)
         # Find which centroid is "Threshold"
         threshold_stats = None
         for cid, stats in labeled_centroids.items():
@@ -204,7 +256,7 @@ def analyze_activity(activity, recent_history_activities):
             
             race_pred_msg = f"Predicted HM: {total_h}h {total_m}m @ {hm_mins}:{hm_secs:02d}/mi (Based on Threshold Analysis)."
 
-        # 4. Construct Prompt
+        # 5. Construct Prompt
         # Summarize established zones
         zones_summary = "ESTABLISHED ZONES (K-Means Centroids):\n"
         for cid, info in labeled_centroids.items():
@@ -227,12 +279,26 @@ def analyze_activity(activity, recent_history_activities):
             
             today_summary += f"- {count} laps in {name}: Avg {c_m}:{c_s:02d}/mi, {int(avg_hr_c)} bpm\n"
 
+        # User profile constraints
+        profile_summary = ""
+        if profile:
+            profile_summary = "USER PROFILE CONSTRAINTS (Reference):\n"
+            if abs_hr_zones:
+                profile_summary += f"Manual HR Zones: {abs_hr_zones}\n"
+            if abs_pace_zones:
+                # Need readable pace for profile too?
+                from vdot import pace_to_min_km
+                readable_paces = {z: pace_to_min_km(s) for z, s in abs_pace_zones.items() if isinstance(s, (int, float))}
+                profile_summary += f"Manual Pace Zones (min/km): {readable_paces}\n"
+
         user_prompt = f"""
-        Analyze this workout based on the K-Means analysis.
+        Analyze this workout based on the K-Means analysis and user profile.
         
         {zones_summary}
         
         {today_summary}
+        
+        {profile_summary}
         
         {race_pred_msg}
         
@@ -264,3 +330,5 @@ def analyze_activity(activity, recent_history_activities):
     except Exception as e:
         logger.error(f"Error generating AI feedback: {e}")
         return f"Error analyzing data: {str(e)}"
+    finally:
+        session.close()

@@ -3,50 +3,14 @@ import logging
 import requests
 import time
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, BigInteger, Text, JSON
 from ai_coach import analyze_activity
-from sqlalchemy.orm import declarative_base, sessionmaker
+from supplements import get_protein_reminder
 from sqlalchemy.dialects.postgresql import insert
+from models import init_db, Activity, StravaAuth
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Database Setup
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    # Fallback for local testing
-    DATABASE_URL = "postgresql://user:password@localhost:5432/aerofit"
-
-Base = declarative_base()
-
-# Re-define Activity to ensure we can write to it (sharing models would be better, but keeping it simple)
-class Activity(Base):
-    __tablename__ = 'activities'
-    activity_id = Column(BigInteger, primary_key=True)
-    date = Column(DateTime, nullable=False)
-    activity_type = Column(String, nullable=False) 
-    avg_hr = Column(Integer)
-    max_hr = Column(Integer)
-    avg_speed_mps = Column(Float)
-    distance_meters = Column(Float)
-    duration_seconds = Column(Float)
-    rpe = Column(Float, nullable=True)
-    laps = Column(JSON, nullable=True) # Store array of lap objects
-    ai_feedback = Column(Text, nullable=True)
-
-class StravaAuth(Base):
-    __tablename__ = 'strava_auth'
-    id = Column(Integer, primary_key=True)
-    access_token = Column(Text, nullable=False)
-    refresh_token = Column(Text, nullable=False)
-    expires_at = Column(BigInteger, nullable=False)
-    scope = Column(String)
-
-def init_db():
-    engine = create_engine(DATABASE_URL)
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine)
 
 def get_strava_config():
     client_id = os.getenv("STRAVA_CLIENT_ID")
@@ -75,7 +39,7 @@ def get_activity_details(activity_id, access_token):
         return None
     return response.json()
 
-def exchange_code_for_token(code):
+def exchange_code_for_token(code, user_id):
     client_id, client_secret, _ = get_strava_config()
     
     response = requests.post(
@@ -92,10 +56,10 @@ def exchange_code_for_token(code):
         raise Exception(f"Failed to exchange code: {response.text}")
         
     data = response.json()
-    save_tokens(data)
+    save_tokens(data, user_id)
     return data
 
-def refresh_access_token(refresh_token):
+def refresh_access_token(refresh_token, user_id):
     client_id, client_secret, _ = get_strava_config()
     
     response = requests.post(
@@ -112,30 +76,51 @@ def refresh_access_token(refresh_token):
         raise Exception(f"Failed to refresh token: {response.text}")
         
     data = response.json()
-    save_tokens(data)
+    save_tokens(data, user_id)
     return data['access_token']
 
-def save_tokens(token_data):
+def save_tokens(token_data, user_id):
     Session = init_db()
     session = Session()
     try:
-        # Simple single-user storage: always update ID 1
+        # Multi-user storage: filter by user_id
         stmt = insert(StravaAuth).values(
-            id=1,
+            user_id=user_id,
             access_token=token_data['access_token'],
             refresh_token=token_data['refresh_token'],
             expires_at=token_data['expires_at'],
-            scope=token_data.get('scope', '') # Scope might not be in refresh response
+            scope=token_data.get('scope', '')
         )
         do_update_stmt = stmt.on_conflict_do_update(
-            index_elements=['id'],
+            constraint='strava_auth_pkey', # Assuming user_id is PK or has unique constraint
             set_={
                 'access_token': stmt.excluded.access_token,
                 'refresh_token': stmt.excluded.refresh_token,
                 'expires_at': stmt.excluded.expires_at,
             }
         )
-        session.execute(do_update_stmt)
+        # Wait, StravaAuth table in models.py has 'id' as primary key.
+        # I should change it to user_id as PK or add unique constraint on user_id.
+        # Let's check models.py again.
+        
+        # Actually, let's just use filter_by(user_id=user_id) for update if exists, else insert.
+        auth = session.query(StravaAuth).filter_by(user_id=user_id).first()
+        if auth:
+            auth.access_token = token_data['access_token']
+            auth.refresh_token = token_data['refresh_token']
+            auth.expires_at = token_data['expires_at']
+            if 'scope' in token_data:
+                auth.scope = token_data['scope']
+        else:
+            auth = StravaAuth(
+                user_id=user_id,
+                access_token=token_data['access_token'],
+                refresh_token=token_data['refresh_token'],
+                expires_at=token_data['expires_at'],
+                scope=token_data.get('scope', '')
+            )
+            session.add(auth)
+            
         session.commit()
     except Exception as e:
         logger.error(f"Failed to save tokens: {e}")
@@ -144,24 +129,24 @@ def save_tokens(token_data):
     finally:
         session.close()
 
-def get_valid_access_token():
+def get_valid_access_token(user_id):
     Session = init_db()
     session = Session()
     try:
-        auth = session.query(StravaAuth).filter_by(id=1).first()
+        auth = session.query(StravaAuth).filter_by(user_id=user_id).first()
         if not auth:
             return None
             
         if auth.expires_at < time.time():
             logger.info("Token expired, refreshing...")
-            return refresh_access_token(auth.refresh_token)
+            return refresh_access_token(auth.refresh_token, user_id)
             
         return auth.access_token
     finally:
         session.close()
 
-def fetch_strava_athlete():
-    access_token = get_valid_access_token()
+def fetch_strava_athlete(user_id):
+    access_token = get_valid_access_token(user_id)
     if not access_token:
         raise Exception("Not authenticated with Strava")
         
@@ -176,8 +161,8 @@ def fetch_strava_athlete():
         
     return response.json()
 
-def fetch_strava_activities():
-    access_token = get_valid_access_token()
+def fetch_strava_activities(user_id):
+    access_token = get_valid_access_token(user_id)
     if not access_token:
         raise Exception("Not authenticated with Strava")
         
@@ -192,10 +177,10 @@ def fetch_strava_activities():
         raise Exception(f"Failed to fetch activities: {response.text}")
         
     activities = response.json()
-    process_activities(activities)
+    process_activities(activities, user_id)
     return len(activities)
 
-def process_activities(activities):
+def process_activities(activities, user_id):
     Session = init_db()
     session = Session()
     inserted_count = 0
@@ -217,6 +202,7 @@ def process_activities(activities):
                 
             stmt = insert(Activity).values(
                 activity_id=activity_id,
+                user_id=user_id,
                 date=start_date_local,
                 activity_type=activity_type,
                 avg_hr=activity.get('average_heartrate'),
@@ -230,6 +216,7 @@ def process_activities(activities):
             do_update_stmt = stmt.on_conflict_do_update(
                 index_elements=['activity_id'],
                 set_={
+                    'user_id': stmt.excluded.user_id,
                     'date': stmt.excluded.date,
                     'activity_type': stmt.excluded.activity_type,
                     'avg_hr': stmt.excluded.avg_hr,
@@ -251,36 +238,46 @@ def process_activities(activities):
             # Fetch details
             # Note: This increases API rate limit usage!
             try:
-                details = get_activity_details(activity_id, get_valid_access_token())
+                details = get_activity_details(activity_id, get_valid_access_token(user_id))
                 if details:
                     # Prefer splits_metric (1000m or 1mi usually) over laps (manual laps)
                     # The user prompt asked for "The Split is the Atom"
-                    splits = details.get('splits_metric') or details.get('laps')
-                    if splits:
-                        session.query(Activity).filter_by(activity_id=activity_id).update({"laps": splits})
-                        session.commit()
+                    session.query(Activity).filter_by(activity_id=activity_id, user_id=user_id).update({
+                        "laps": details.get('splits_metric') or details.get('laps')
+                    })
+                    session.commit()
             except Exception as e:
                 logger.error(f"Error fetching details for {activity_id}: {e}")
 
             # Reload activity to get updated data including laps
-            existing = session.query(Activity).filter_by(activity_id=activity_id).first()
+            existing = session.query(Activity).filter_by(activity_id=activity_id, user_id=user_id).first()
             
             # AI Analysis Trigger (Only if it's a new or updated run without feedback)
             if not existing or (existing and not existing.ai_feedback):
                  # Fetch recent history for context
                  # Fetch ONLY the laps data for history now
-                 recent_activities = session.query(Activity).filter(Activity.laps.isnot(None)).order_by(Activity.date.desc()).limit(20).all()
+                 recent_activities = session.query(Activity).filter(
+                     Activity.user_id == user_id,
+                     Activity.laps.isnot(None)
+                 ).order_by(Activity.date.desc()).limit(20).all()
                  
                  # Analyze
                  feedback = analyze_activity(existing, recent_activities)
                  
                  # Update DB with feedback
-                 session.query(Activity).filter_by(activity_id=activity_id).update({"ai_feedback": feedback})
+                 session.query(Activity).filter_by(activity_id=activity_id, user_id=user_id).update({"ai_feedback": feedback})
+                 session.commit()
+                 
+                 # ─── Post-run protein reminder ─────────────────────────────
+                 reminder = get_protein_reminder()
+                 logger.info(f"Post-run protein reminder for activity {activity_id}: {reminder['label']}")
+                 # Mark reminder as sent so downstream consumers can check the flag
+                 session.query(Activity).filter_by(activity_id=activity_id, user_id=user_id).update({"protein_reminded": True})
                  session.commit()
             
             updated_count += 1
                 
-        logger.info(f"Processed {len(activities)} activities.")
+        logger.info(f"Processed {len(activities)} activities for user {user_id}.")
         
     except Exception as e:
         logger.error(f"Error processing Strava activities: {e}")

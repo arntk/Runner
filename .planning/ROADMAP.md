@@ -2,7 +2,7 @@
 
 ## Phases
 
-- [ ] **Phase 1: User Profile & Foundation** - Set up athlete identity and baseline training zones.
+- [x] **Phase 1: User Profile & Foundation** - Set up athlete identity and baseline training zones. (Completed March 31, 2026)
 - [ ] **Phase 2: Real-time Data Sync & Ingestion** - Implement Strava webhooks and contextual post-run check-ins.
 - [ ] **Phase 3: Core Analytics (Zones & Clustering)** - Apply ML to categorize activities and anchor zones with manual data.
 - [ ] **Phase 4: Advanced Training Metrics** - Implement Norwegian-specific load tracking and hybrid race predictions.
